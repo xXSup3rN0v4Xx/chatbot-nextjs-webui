@@ -4,7 +4,7 @@
 **Chatbot-nextjs-webui** is a sleek, responsive frontend for interacting with powerful local agents. It supports natural language chat, speech-to-text, text-to-speech, image generation, vision tasks, and more — all wrapped in a modern Next.js interface.
 
 ## Screenshots
-![Chatbot Interface](./assets/screenshot.png)
+![Chatbot Interface](./assets/WebUI_Screenshot1.png)
 *The main interface featuring draggable components, audio visualization, anime-style avatar, and the animated starfish triangle background*
 
 Rendering features include:
