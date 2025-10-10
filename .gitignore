@@ -1,0 +1,8 @@
+/chatbot-next/node_modules/
+/chatbot-next/.next/
+/chatbot-next/.env*
+/chatbot-next/.env.local/
+/backend/app/.venv/
+*.pyc
+__pycache__/*
+package-lock.json
