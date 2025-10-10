@@ -3,6 +3,10 @@
 ## About
 **Chatbot-nextjs-webui** is a sleek, responsive frontend for interacting with powerful local agents. It supports natural language chat, speech-to-text, text-to-speech, image generation, vision tasks, and more — all wrapped in a modern Next.js interface.
 
+## Screenshots
+![Chatbot Interface](./assets/screenshot.png)
+*The main interface featuring draggable components, audio visualization, anime-style avatar, and the animated starfish triangle background*
+
 Rendering features include:
 - Darcula-style markdown code blocks
 - Mermaid diagrams
@@ -17,12 +21,15 @@ Just type prompts like:
 - "please create an HTML app with embedded JavaScript that..."
 
 ## Features
-- 🖥️ Modern UI made using Next.js 14 & shadcn/ui
-- 🎨 Magnetic Slider, customizable dashboard using draggable components
-- 💬 Chat interface with response stream rendering
-- 👁️ Several types of vision models for a variety of tasks
-- 🎙️ Speech recognition and text-to-speech generation using WhisperSTT and VibeVoiceTTS
-- 🎭 Create Custom Avatars with lip sync using SadTalker
+- 🖥️ **Modern UI** made using Next.js 14 & shadcn/ui with custom theming
+- 🎨 **Draggable Dashboard** with resizable components and magnetic grid layout
+- 🌟 **Animated Background** featuring slow-growing starfish patterns on triangle tessellation
+- 💬 **Real-time Chat** interface with streaming responses and markdown rendering
+- � **Audio Visualization** with dual-channel waveform display (user/AI)
+- 🎭 **Add your own Anime-style Avatars** integration with customizable character display
+- 👁️ **Vision Models** support for various image analysis tasks
+- 🎙️ **Speech Integration** using WhisperSTT and VibeVoiceTTS
+- � **Responsive Design** with rust-orange and banana-yellow color scheme
 
 ## Prerequisites
 - Node.js 18+
