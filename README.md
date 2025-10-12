@@ -33,7 +33,7 @@ Just type prompts like:
 
 ## Prerequisites
 - Node.js 18+
-- Chatbot-core Python API Server
+- Chatbot-python-core API Server
 - Ollama
 
 # Installation
