@@ -16,6 +16,8 @@ export default function AudioVisualizer({ audioData = new Float32Array(0), isUse
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [isDemoMode, setIsDemoMode] = useState(false)
   const demoIntervalRef = useRef(null)
+  const settingsOpenTimeRef = useRef(0)
+  const allowCloseRef = useRef(false)
 
   // Generate demo audio data
   const generateDemoData = () => {
@@ -92,7 +94,8 @@ export default function AudioVisualizer({ audioData = new Float32Array(0), isUse
   }
 
   return (
-    <Card className="w-full h-full bg-card text-foreground relative">
+    <>
+    <Card className="w-full h-full bg-card text-foreground relative" style={{ transform: 'translateZ(0)', willChange: 'contents' }}>
       <CardContent className="w-full h-full p-2">
         <canvas 
           ref={canvasRef} 
@@ -101,22 +104,120 @@ export default function AudioVisualizer({ audioData = new Float32Array(0), isUse
           className="w-full h-full rounded"
           style={{ imageRendering: 'pixelated' }}
         />
-        <Dialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
-          <DialogTrigger asChild>
-            <Button 
-              className="absolute bottom-2 right-2 rounded-full hover:opacity-90 flex items-center justify-center non-draggable"
-              style={{
-                backgroundColor: 'hsl(52 100% 55%)',
-                color: 'hsl(0 0% 15%)',
-                width: '32px',
-                height: '32px',
-                padding: '0'
-              }}
-            >
-              <Settings className="h-4 w-4" />
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="bg-card text-foreground border-accent">
+      </CardContent>
+        
+      {/* Settings Button - positioned in bottom-right corner as part of card border */}
+      <button
+        type="button"
+        className="non-draggable audio-visualizer-settings-trigger"
+        data-no-dnd="true"
+        style={{
+          position: 'absolute',
+          bottom: '4px',
+          right: '4px',
+          width: '28px',
+          height: '28px',
+          padding: '0',
+          margin: '0',
+          borderRadius: '50%',
+          border: '2px solid hsl(52 100% 55%)',
+          backgroundColor: 'hsl(52 100% 55%)',
+          color: 'hsl(0 0% 15%)',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 99999,
+          lineHeight: 1,
+          pointerEvents: 'auto',
+          touchAction: 'none'
+        }}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          console.log('=== AUDIO VISUALIZER SETTINGS BUTTON CLICKED ===');
+          console.log('Current isSettingsOpen state:', isSettingsOpen);
+          settingsOpenTimeRef.current = Date.now();
+          allowCloseRef.current = false;
+          // Use setTimeout to ensure state update happens after event completes
+          setTimeout(() => {
+            console.log('Setting isSettingsOpen to true');
+            setIsSettingsOpen(true);
+          }, 0);
+        }}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          console.log('Audio visualizer settings button pointer down');
+        }}
+        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'hsl(52 100% 60%)'}
+        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'hsl(52 100% 55%)'}
+      >
+        <Settings className="h-4 w-4" />
+      </button>
+        
+        <Dialog 
+          open={isSettingsOpen} 
+          onOpenChange={(open) => {
+            console.log('AudioVisualizer Dialog onOpenChange called with:', open, 'allowClose:', allowCloseRef.current, 'current state:', isSettingsOpen)
+            // NEVER allow external closing - only our explicit handlers can close
+            if (!open) {
+              if (allowCloseRef.current) {
+                console.log('Allowing dialog close - explicitly requested');
+                setIsSettingsOpen(false);
+                allowCloseRef.current = false;
+              } else {
+                console.log('BLOCKING dialog close - not explicitly requested');
+              }
+            } else {
+              console.log('Dialog opening');
+              setIsSettingsOpen(true);
+            }
+          }}
+          modal={true}
+        >
+          <DialogContent 
+            className="bg-card text-foreground border-accent z-[99999]"
+            style={{ zIndex: 99999 }}
+            ref={(node) => {
+              if (node) {
+                // Find and attach listener to the close button
+                const closeButton = node.querySelector('[data-radix-collection-item]') || 
+                                  node.querySelector('button[aria-label="Close"]') ||
+                                  Array.from(node.querySelectorAll('button')).find(btn => 
+                                    btn.querySelector('svg') && btn.className.includes('absolute')
+                                  );
+                if (closeButton && !closeButton.hasAttribute('data-close-listener')) {
+                  closeButton.setAttribute('data-close-listener', 'true');
+                  closeButton.addEventListener('click', () => {
+                    console.log('X button clicked - allowing close');
+                    allowCloseRef.current = true;
+                  });
+                }
+              }
+            }}
+            onOpenAutoFocus={(e) => {
+              e.preventDefault()
+            }}
+            onCloseAutoFocus={(e) => {
+              e.preventDefault()
+            }}
+            onEscapeKeyDown={(e) => {
+              console.log('AudioVisualizer: ESC pressed - closing')
+              allowCloseRef.current = true;
+              setIsSettingsOpen(false)
+            }}
+            onPointerDownOutside={(e) => {
+              console.log('Audio visualizer dialog: onPointerDownOutside triggered', e.target);
+              // Always prevent default - dialog should only close via X button or ESC
+              e.preventDefault();
+            }}
+            onInteractOutside={(e) => {
+              console.log('Audio visualizer dialog: onInteractOutside triggered', e.target);
+              // Always prevent default - dialog should only close via X button or ESC
+              e.preventDefault();
+            }}
+          >
             <DialogHeader>
               <DialogTitle style={{color: 'hsl(52 100% 55%)'}}>Audio Visualizer Settings</DialogTitle>
             </DialogHeader>
@@ -137,7 +238,7 @@ export default function AudioVisualizer({ audioData = new Float32Array(0), isUse
             </div>
           </DialogContent>
         </Dialog>
-      </CardContent>
     </Card>
+    </>
   )
 }

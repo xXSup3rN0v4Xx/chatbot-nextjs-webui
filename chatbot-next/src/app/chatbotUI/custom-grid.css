@@ -1,0 +1,68 @@
+/* React Grid Layout High-Performance Configuration for 144Hz */
+.react-grid-item {
+  position: relative;
+  /* Performance optimizations - removed 'paint' to allow dialogs to render properly */
+  contain: layout style;
+  will-change: transform;
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+/* Override placeholder color to banana yellow with rounded corners */
+.react-grid-layout .react-grid-item.react-grid-placeholder {
+  background: hsl(52 100% 55% / 0.35) !important;
+  border: 3px dashed hsl(52 100% 55%) !important;
+  border-radius: 16px !important;
+  box-shadow: 
+    0 0 30px hsl(52 100% 55% / 0.4),
+    inset 0 0 40px hsl(52 100% 55% / 0.15) !important;
+  animation: placeholderPulse 1.2s ease-in-out infinite alternate !important;
+  opacity: 1 !important;
+  z-index: 2;
+  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+}
+
+@keyframes placeholderPulse {
+  0% {
+    background: hsl(52 100% 55% / 0.3) !important;
+    box-shadow: 
+      0 0 25px hsl(52 100% 55% / 0.3),
+      inset 0 0 30px hsl(52 100% 55% / 0.1) !important;
+  }
+  100% {
+    background: hsl(52 100% 55% / 0.4) !important;
+    box-shadow: 
+      0 0 35px hsl(52 100% 55% / 0.5),
+      inset 0 0 50px hsl(52 100% 55% / 0.2) !important;
+  }
+}
+
+/* Drag handle styling (optional visual indicator) */
+.drag-handle {
+  cursor: move !important;
+  z-index: 9998 !important;
+  position: absolute !important;
+  /* Optimize drag handle rendering */
+  contain: layout style;
+  transform: translateZ(0);
+}
+
+/* React Grid Layout resize handle */
+.react-grid-item > .react-resizable-handle {
+  z-index: 10 !important;
+  /* Optimize resize handle */
+  contain: layout style;
+  transform: translateZ(0);
+}
+
+/* Prevent content reflow during drag/resize */
+.react-grid-item * {
+  pointer-events: auto;
+}
+
+/* Optimize child cards - removed 'paint' to allow dialogs */
+.react-grid-item > div {
+  contain: layout style;
+  transform: translateZ(0);
+}

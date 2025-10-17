@@ -4,9 +4,11 @@ import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from '
 import { Responsive, WidthProvider } from 'react-grid-layout'
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
+import './custom-grid.css'
 import AvatarCard from '@/components/AvatarCard/AvatarCard'
 import ChatSection from '@/components/ChatSection/ChatSection'
 import AudioVisualizer from '@/components/AudioVisualizer/AudioVisualizer'
+import AgentSelector from '@/components/AgentSelector/AgentSelector'
 import { useToast } from '@/hooks/use-toast'
 import { ToastProvider } from '@/components/ui/toast'
 import { Card, CardContent } from "@/components/ui/card"
@@ -25,14 +27,18 @@ import {
 const ResponsiveGridLayout = WidthProvider(Responsive)
 
 export default function EnhancedChatInterface() {
-  // Layout State
-  const [layout, setLayout] = useState([
-    { i: 'audioVisualizer', x: 0, y: 0, w: 3, h: 4 },
-    { i: 'avatar', x: 0, y: 4, w: 3, h: 7 },
+  // Default layout - used for both server and initial client render
+  const defaultLayout = [
+    { i: 'agentSelector', x: 0, y: 0, w: 3, h: 5 },
+    { i: 'avatar', x: 0, y: 5, w: 3, h: 7 },
     { i: 'chat', x: 3, y: 0, w: 6, h: 12 },
-  ])
+  ]
+
+  // Layout State - Always start with default layout to avoid hydration mismatch
+  const [layout, setLayout] = useState(defaultLayout)
 
   // App State
+  const [currentAgentId, setCurrentAgentId] = useState(null)
   const [selectedModel, setSelectedModel] = useState('')
   const [availableModels, setAvailableModels] = useState([])
   const [chatHistory, setChatHistory] = useState([])
@@ -67,6 +73,8 @@ export default function EnhancedChatInterface() {
   const reconnectTimeoutRef = useRef(null)
   const reconnectAttemptsRef = useRef(0)
   const isComponentMounted = useRef(true)
+  const allowSettingsCloseRef = useRef(false)
+  const settingsOpenTimeRef = useRef(0)
   const MAX_RECONNECT_ATTEMPTS = 5
   const RECONNECT_DELAY = 2000
 
@@ -78,6 +86,26 @@ export default function EnhancedChatInterface() {
   ])
 
   const { toast } = useToast()
+
+  // Load conversation history from multimodal-db
+  const loadConversationHistory = useCallback(async (agentId) => {
+    try {
+      const response = await fetch(`http://localhost:8001/conversations/${agentId}/messages?limit=50`)
+      if (response.ok) {
+        const data = await response.json()
+        // Reverse messages so oldest are first (API returns newest first)
+        const messages = data.messages.reverse().map(msg => ({
+          role: msg.role,
+          content: msg.content,
+          timestamp: msg.timestamp
+        }))
+        setChatHistory(messages)
+        console.log(`Loaded ${messages.length} messages from history`)
+      }
+    } catch (error) {
+      console.error('Failed to load conversation history:', error)
+    }
+  }, [])
 
   const setupWebSocket = useCallback(() => {
     // Generate a unique agent ID if not already stored
@@ -92,20 +120,34 @@ export default function EnhancedChatInterface() {
     try {
       ws.current = new WebSocket(`ws://localhost:2020/ws/${agentId}`)
       
+      // Suppress initial connection errors during startup
+      ws.current.addEventListener('error', function initialErrorHandler(e) {
+        // Remove this handler after first error
+        ws.current?.removeEventListener('error', initialErrorHandler)
+      })
+      
       ws.current.onopen = () => {
         if (!isComponentMounted.current) return
         setIsConnected(true)
         reconnectAttemptsRef.current = 0
-        toast({
-          title: "Connected",
-          description: "WebSocket connection established",
-        })
+        
+        // Load conversation history from database
+        loadConversationHistory(agentId)
+        
+        // Only show toast on successful reconnection, not initial connection
+        if (reconnectAttemptsRef.current > 0) {
+          toast({
+            title: "Reconnected",
+            description: "WebSocket connection re-established",
+          })
+        }
       }
       
       ws.current.onmessage = (event) => {
         if (!isComponentMounted.current) return
         try {
           const message = JSON.parse(event.data)
+          console.log('WebSocket message received:', message)
           
           // Batch updates during drag operations to reduce re-renders
           const updateState = () => {
@@ -117,17 +159,22 @@ export default function EnhancedChatInterface() {
                 }])
                 break
               case 'chat_response':
+                console.log('Processing chat_response:', message)
                 if (message.is_stream) {
                   // Handle streaming message
                   setStreamingMessage(message.content)
                 } else {
                   // Handle complete message
+                  console.log('Adding assistant message to chat history')
                   setChatHistory(prev => [...prev, { 
                     role: 'assistant', 
                     content: message.content 
                   }])
                   setStreamingMessage('')
                 }
+                break
+              case 'config_refreshed':
+                console.log('Config refreshed:', message.content)
                 break
               case 'command_result':
                 setCommandResult(message.content)
@@ -137,12 +184,15 @@ export default function EnhancedChatInterface() {
                 }])
                 break
               case 'error':
+                console.error('WebSocket error message:', message.content)
                 toast({
                   title: "Error",
                   description: message.content,
                   variant: "destructive"
                 })
                 break
+              default:
+                console.log('Unknown message type:', message.type)
             }
           }
 
@@ -177,7 +227,9 @@ export default function EnhancedChatInterface() {
 
       ws.current.onerror = (error) => {
         if (!isComponentMounted.current) return
-        console.error('WebSocket error:', error)
+        // WebSocket errors are often connection issues - don't spam console
+        // The onclose handler will trigger reconnection
+        console.warn('WebSocket connection issue (will auto-reconnect):', error?.message || 'Connection error')
       }
     } catch (error) {
       console.error('Error creating WebSocket:', error)
@@ -211,7 +263,8 @@ export default function EnhancedChatInterface() {
       }
     }
     audioWs.current.onerror = (error) => {
-      console.error('Audio WebSocket error:', error)
+      // Audio WebSocket is optional - don't spam console with errors
+      console.warn('Audio WebSocket connection issue (non-critical):', error?.message || 'Connection error')
     }
     audioWs.current.onclose = () => {
       console.log('Audio WebSocket closed')
@@ -245,6 +298,14 @@ export default function EnhancedChatInterface() {
     }
   
     try {
+      // Add user message to chat history immediately for better UX
+      if (type === 'chat_message') {
+        setChatHistory(prev => [...prev, { 
+          role: 'user', 
+          content: content 
+        }])
+      }
+      
       ws.current.send(JSON.stringify({
         type: type,
         content: content
@@ -276,12 +337,31 @@ export default function EnhancedChatInterface() {
   
   const fetchAvailableModels = async () => {
     try {
-      const response = await fetch('http://localhost:2020/available_models')
+      // Fetch from chatbot-python-core Ollama API
+      const response = await fetch('http://localhost:8000/api/v1/ollama/models')
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
       const data = await response.json()
-      setAvailableModels(data.models || [])
+      console.log('Available Ollama models - raw response:', data)
+      
+      // Extract model names from API response
+      // Response format: { success: true, models: ["model1", "model2", ...], count: 20 }
+      let modelNames = []
+      if (data.models && Array.isArray(data.models)) {
+        modelNames = data.models
+      } else if (Array.isArray(data)) {
+        // Fallback if response is directly an array
+        modelNames = data
+      }
+      
+      console.log('Extracted model names:', modelNames)
+      console.log('Number of models:', modelNames.length)
+      setAvailableModels(modelNames)
+      
+      if (modelNames.length === 0) {
+        console.warn('No models found in API response')
+      }
     } catch (error) {
       console.error('Error fetching available models:', error)
       toast({
@@ -294,14 +374,40 @@ export default function EnhancedChatInterface() {
 
   const handleModelChange = async (value) => {
     setSelectedModel(value)
+    
+    if (!currentAgentId) {
+      console.warn('No agent selected, cannot update model')
+      return
+    }
+    
     try {
-      const response = await fetch('http://localhost:2020/set_model', {
-        method: 'POST',
+      // Update agent config in multimodal-db with new Ollama model
+      const response = await fetch(`http://localhost:8001/agents/${currentAgentId}`, {
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: value }),
+        body: JSON.stringify({
+          models: {
+            large_language_model: {
+              ollama: {
+                instances: [{
+                  model: value
+                }]
+              }
+            }
+          }
+        }),
       })
       
       if (!response.ok) throw new Error('Failed to set model')
+      
+      // Send refresh message to WebSocket to reload config
+      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+        ws.current.send(JSON.stringify({
+          type: 'refresh_config',
+          content: {}
+        }))
+        console.log('Sent config refresh to WebSocket')
+      }
       
       toast({
         title: "Model Changed",
@@ -318,44 +424,90 @@ export default function EnhancedChatInterface() {
   }
 
   const handleLayoutChange = useCallback((newLayout) => {
-    setLayout(newLayout)
-  }, [])
+    // Only update if not currently dragging to avoid unnecessary re-renders
+    // The final layout will be set in handleDragStop/handleResizeStop
+    if (!isDragging) {
+      setLayout(newLayout)
+    }
+  }, [isDragging])
 
   const handleDragStart = useCallback(() => {
     setIsDragging(true)
   }, [])
 
-  const handleDragStop = useCallback(() => {
+  const handleDragStop = useCallback((newLayout) => {
     setIsDragging(false)
+    setLayout(newLayout)
   }, [])
 
-  // Memoized components to prevent unnecessary re-renders during drag
-  const MemoizedChatSection = useMemo(() => 
-    memo(() => (
-      <ChatSection
-        selectedModel={selectedModel}
-        availableModels={availableModels}
-        onModelChange={handleModelChange}
-        sendMessage={sendMessage}
-        chatHistory={chatHistory}
-        streamingMessage={streamingMessage}
-        isConnected={isConnected}
-        commandResult={commandResult}
-      />
-    )), [selectedModel, availableModels, handleModelChange, sendMessage, chatHistory, streamingMessage, isConnected, commandResult]
-  )
+  const handleResizeStop = useCallback((newLayout) => {
+    setIsDragging(false)
+    setLayout(newLayout)
+  }, [])
 
-  const MemoizedAvatarCard = useMemo(() => memo(() => <AvatarCard />), [])
+  // Memoized components - simplified to prevent re-renders during drag
+  const MemoizedChatSection = useMemo(() => (
+    <ChatSection
+      selectedModel={selectedModel}
+      availableModels={availableModels}
+      onModelChange={handleModelChange}
+      sendMessage={sendMessage}
+      chatHistory={chatHistory}
+      streamingMessage={streamingMessage}
+      isConnected={isConnected}
+      commandResult={commandResult}
+    />
+  ), [selectedModel, availableModels, handleModelChange, sendMessage, chatHistory, streamingMessage, isConnected, commandResult])
 
-  const MemoizedAudioVisualizer = useMemo(() => 
-    memo(({ audioData, isUserAudio }) => (
-      <AudioVisualizer 
-        audioData={audioData} 
-        isDarkTheme={isDarkTheme}
-        isUserAudio={isUserAudio}
-      />
-    )), [isDarkTheme]
-  )
+  // Agent handling functions
+  const handleAgentChange = useCallback(async (newAgentId) => {
+    if (newAgentId === currentAgentId) return
+    
+    // Close existing WebSocket connections
+    if (ws.current) ws.current.close()
+    if (audioWs.current) audioWs.current.close()
+    
+    // Clear current chat
+    setChatHistory([])
+    setStreamingMessage('')
+    
+    // Update agent ID
+    setCurrentAgentId(newAgentId)
+    localStorage.setItem('agentId', newAgentId)
+    
+    // Load agent's current Ollama model from multimodal-db
+    try {
+      const response = await fetch(`http://localhost:8001/agents/${newAgentId}`)
+      if (response.ok) {
+        const agentConfig = await response.json()
+        const agentModel = agentConfig?.models?.large_language_model?.ollama?.instances?.[0]?.model
+        if (agentModel) {
+          console.log(`Loading agent ${newAgentId}'s model:`, agentModel)
+          setSelectedModel(agentModel)
+        }
+      }
+    } catch (error) {
+      console.error('Error loading agent model:', error)
+    }
+    
+    // Reconnect with new agent
+    setTimeout(() => setupWebSocket(), 100)
+  }, [currentAgentId, setupWebSocket])
+
+  const handleAgentCreate = useCallback((newAgentId) => {
+    // Switch to newly created agent
+    handleAgentChange(newAgentId)
+  }, [handleAgentChange])
+
+  const handleAgentDelete = useCallback((deletedAgentId) => {
+    if (deletedAgentId === currentAgentId) {
+      // If current agent deleted, clear and disconnect
+      setCurrentAgentId(null)
+      setChatHistory([])
+      if (ws.current) ws.current.close()
+      if (audioWs.current) audioWs.current.close()
+    }
+  }, [currentAgentId])
 
   const saveConfig = useCallback(() => {
     const config = {
@@ -375,12 +527,29 @@ export default function EnhancedChatInterface() {
     const savedConfig = localStorage.getItem('chatConfig')
     if (savedConfig) {
       const config = JSON.parse(savedConfig)
-      setLayout(config.layout || layout)
-      setIsDarkTheme(config.isDarkTheme)
-      setOllamaApiUrl(config.ollamaApiUrl || ollamaApiUrl)
-      setUserName(config.userName || '')
+      // Load layout after hydration
+      if (config.layout) {
+        console.log('Loading layout from localStorage:', config.layout)
+        setLayout(config.layout)
+      }
+      // Don't load layout here - it's already loaded in useState initializer
+      if (config.isDarkTheme !== undefined) {
+        setIsDarkTheme(config.isDarkTheme)
+      }
+      if (config.ollamaApiUrl) {
+        setOllamaApiUrl(config.ollamaApiUrl)
+      }
+      if (config.userName) {
+        setUserName(config.userName)
+      }
     }
-  }, [])
+    
+    // Load current agent ID
+    const savedAgentId = localStorage.getItem('agentId')
+    if (savedAgentId) {
+      setCurrentAgentId(savedAgentId)
+    }
+  }, []) // Empty deps - only run once on mount
 
   // Smart hover detection for side panel
   const isOverCard = useCallback((x, y) => {
@@ -433,7 +602,13 @@ export default function EnhancedChatInterface() {
   }, [])
 
   const removeComponent = useCallback((componentId) => {
-    setLayout(prev => prev.filter(item => item.i !== componentId))
+    console.log('removeComponent called with:', componentId);
+    setLayout(prev => {
+      console.log('Current layout before removal:', prev);
+      const newLayout = prev.filter(item => item.i !== componentId);
+      console.log('New layout after removal:', newLayout);
+      return newLayout;
+    });
   }, [])
 
   const toggleSpeechRecognition = useCallback(() => {
@@ -504,6 +679,7 @@ export default function EnhancedChatInterface() {
 
       <div className="h-screen w-full pt-20 p-4 bg-background text-foreground font-mono">
         <ResponsiveGridLayout
+          key={`layout-${layout.length}-${layout.map(i => i.i).join('-')}`}
           className="layout"
           layouts={{ lg: layout }}
           breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
@@ -513,9 +689,9 @@ export default function EnhancedChatInterface() {
           onDragStart={handleDragStart}
           onDragStop={handleDragStop}
           onResizeStart={handleDragStart}
-          onResizeStop={handleDragStop}
-          isDraggable
-          isResizable
+          onResizeStop={handleResizeStop}
+          isDraggable={true}
+          isResizable={true}
           draggableCancel=".non-draggable"
           useCSSTransforms={true}
           compactType="vertical"
@@ -524,38 +700,85 @@ export default function EnhancedChatInterface() {
           containerPadding={[0, 0]}
           resizeHandles={['se']}
           transformScale={1}
+          autoSize={true}
+          verticalCompact={true}
         >
           {layout.map(item => (
-            <div key={item.i} className="overflow-hidden">
-              {item.i === 'avatar' && <MemoizedAvatarCard />}
-              {item.i === 'chat' && <MemoizedChatSection />}
+            <div key={item.i} className="h-full relative">
+              {item.i === 'agentSelector' && (
+                <AgentSelector
+                  currentAgentId={currentAgentId}
+                  onAgentChange={handleAgentChange}
+                  onAgentCreate={handleAgentCreate}
+                  onAgentDelete={handleAgentDelete}
+                />
+              )}
+              {item.i === 'avatar' && <AvatarCard />}
+              {item.i === 'chat' && MemoizedChatSection}
               {item.i === 'audioVisualizer' && (
                 <div className="flex h-full">
                   <div className="flex-1 mr-1">
-                    <MemoizedAudioVisualizer 
+                    <AudioVisualizer 
                       audioData={userAudioData} 
                       isUserAudio={true}
                     />
                   </div>
                   <div className="flex-1 ml-1">
-                    <MemoizedAudioVisualizer 
+                    <AudioVisualizer 
                       audioData={llmAudioData} 
                       isUserAudio={false}
                     />
                   </div>
                 </div>
               )}
-              <Button
-                className="absolute top-0 right-0 bg-red-500 text-white rounded-full hover:bg-red-600 flex items-center justify-center non-draggable"
+              {/* Close Button - positioned in top-right corner on the border */}
+              <button
+                type="button"
+                className="non-draggable"
+                data-no-dnd="true"
                 style={{
-                  width: '28px',
-                  height: '28px',
-                  padding: '0'
+                  position: 'absolute',
+                  top: '4px',
+                  right: '4px',
+                  width: '24px',
+                  height: '24px',
+                  padding: '0',
+                  margin: '0',
+                  borderRadius: '50%',
+                  border: '2px solid hsl(52 100% 55%)',
+                  backgroundColor: '#ef4444',
+                  color: 'white',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  zIndex: 9999,
+                  lineHeight: 1,
+                  pointerEvents: 'auto'
                 }}
-                onClick={() => removeComponent(item.i)}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  console.log('Close button clicked for:', item.i);
+                  console.log('Calling removeComponent...');
+                  removeComponent(item.i);
+                  console.log('removeComponent called');
+                }}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  console.log('Mouse down on close button');
+                }}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  console.log('Pointer down on close button');
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#dc2626'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#ef4444'}
               >
-                <X size={16} />
-              </Button>
+                <X size={14} />
+              </button>
             </div>
           ))}
         </ResponsiveGridLayout>
@@ -692,7 +915,17 @@ export default function EnhancedChatInterface() {
                 height: '48px',
                 padding: '0'
               }}
-              onClick={() => setIsSettingsOpen(true)}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                settingsOpenTimeRef.current = Date.now();
+                allowSettingsCloseRef.current = false;
+                // Use setTimeout to ensure state update happens after event completes
+                setTimeout(() => {
+                  console.log('Setting isSettingsOpen to true');
+                  setIsSettingsOpen(true);
+                }, 0);
+              }}
             >
               <Settings size={22} />
             </Button>
@@ -705,8 +938,58 @@ export default function EnhancedChatInterface() {
           onMouseEnter={handleHoverTrigger}
         />
 
-        <Dialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
-          <DialogContent className={`${isDarkTheme ? 'bg-gray-800 text-green-400' : 'bg-white text-gray-900'}`}>
+        <Dialog 
+          open={isSettingsOpen} 
+          onOpenChange={(open) => {
+            console.log('Main Settings Dialog onOpenChange called with:', open, 'allowClose:', allowSettingsCloseRef.current);
+            // Only allow closing if explicitly allowed (X button or ESC pressed)
+            if (!open) {
+              if (allowSettingsCloseRef.current) {
+                console.log('Allowing main settings dialog close - explicitly requested');
+                setIsSettingsOpen(false);
+                allowSettingsCloseRef.current = false;
+              } else {
+                console.log('BLOCKING main settings dialog close - not explicitly requested');
+              }
+            } else {
+              console.log('Main settings dialog opening');
+              setIsSettingsOpen(true);
+            }
+          }}
+        >
+          <DialogContent 
+            className={`${isDarkTheme ? 'bg-gray-800 text-green-400' : 'bg-white text-gray-900'}`}
+            ref={(node) => {
+              if (node) {
+                // Find and attach listener to the close button
+                const closeButton = node.querySelector('[data-radix-collection-item]') || 
+                                  node.querySelector('button[aria-label="Close"]') ||
+                                  Array.from(node.querySelectorAll('button')).find(btn => 
+                                    btn.querySelector('svg') && btn.className.includes('absolute')
+                                  );
+                if (closeButton && !closeButton.hasAttribute('data-close-listener')) {
+                  closeButton.setAttribute('data-close-listener', 'true');
+                  closeButton.addEventListener('click', () => {
+                    console.log('Main settings X button clicked - allowing close');
+                    allowSettingsCloseRef.current = true;
+                  });
+                }
+              }
+            }}
+            onEscapeKeyDown={(e) => {
+              console.log('Main Settings: ESC pressed - closing');
+              allowSettingsCloseRef.current = true;
+              setIsSettingsOpen(false);
+            }}
+            onPointerDownOutside={(e) => {
+              console.log('Main settings dialog: onPointerDownOutside triggered');
+              e.preventDefault();
+            }}
+            onInteractOutside={(e) => {
+              console.log('Main settings dialog: onInteractOutside triggered');
+              e.preventDefault();
+            }}
+          >
             <DialogHeader>
               <DialogTitle>Settings</DialogTitle>
             </DialogHeader>

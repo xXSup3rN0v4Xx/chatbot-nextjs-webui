@@ -6,7 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import ReactMarkdown from 'react-markdown'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { dracula } from 'react-syntax-highlighter/dist/cjs/styles/prism'
-import { Copy, Check, Paperclip, X } from 'lucide-react'
+import { Copy, Check, Paperclip, X, Send, File, FileCode, FileImage } from 'lucide-react'
 import { Eye, Code } from 'lucide-react'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -26,6 +26,23 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 
+// Format timestamp to relative time
+const formatTimestamp = (timestamp) => {
+  if (!timestamp) return ''
+  const date = new Date(timestamp)
+  const now = new Date()
+  const diffMs = now - date
+  const diffMins = Math.floor(diffMs / 60000)
+  const diffHours = Math.floor(diffMs / 3600000)
+  const diffDays = Math.floor(diffMs / 86400000)
+
+  if (diffMins < 1) return 'Just now'
+  if (diffMins < 60) return `${diffMins}m ago`
+  if (diffHours < 24) return `${diffHours}h ago`
+  if (diffDays < 7) return `${diffDays}d ago`
+  return date.toLocaleDateString()
+}
+
 export default function ChatSection({ 
   selectedModel, 
   availableModels, 
@@ -36,12 +53,19 @@ export default function ChatSection({
   isConnected,
   commandResult
 }) {
+  // Debug logging
+  useEffect(() => {
+    console.log('ChatSection render - selectedModel:', selectedModel)
+    console.log('ChatSection render - availableModels:', availableModels)
+    console.log('ChatSection render - chatHistory length:', chatHistory?.length)
+    console.log('ChatSection render - chatHistory:', chatHistory)
+  }, [selectedModel, availableModels, chatHistory])
+  
   const [message, setMessage] = useState('')
   const chatContainerRef = useRef(null)
   const [currentStream, setCurrentStream] = useState({ role: 'assistant', content: '' })
   const [copiedStates, setCopiedStates] = useState({})
-  const [isFileDialogOpen, setIsFileDialogOpen] = useState(false)
-  const [uploadedFiles, setUploadedFiles] = useState([])
+  const [attachedFiles, setAttachedFiles] = useState([]) // Files attached to current message
   const fileInputRef = useRef(null)
 
   useEffect(() => {
@@ -84,24 +108,53 @@ export default function ChatSection({
 
     for (const file of files) {
       try {
-        const text = await file.text()
         const extension = file.name.split('.').pop().toLowerCase()
-        newFiles.push({
-          name: file.name,
-          content: text,
-          language: getLanguageFromExtension(extension),
-          size: file.size
-        })
+        const isImage = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'].includes(extension)
+        
+        if (isImage) {
+          // Handle image files - convert to base64
+          const reader = new FileReader()
+          const base64Promise = new Promise((resolve, reject) => {
+            reader.onload = () => resolve(reader.result)
+            reader.onerror = reject
+            reader.readAsDataURL(file)
+          })
+          
+          const base64 = await base64Promise
+          newFiles.push({
+            name: file.name,
+            content: base64,
+            type: 'image',
+            size: file.size,
+            preview: base64 // For thumbnail display
+          })
+        } else {
+          // Handle text/code files
+          const text = await file.text()
+          newFiles.push({
+            name: file.name,
+            content: text,
+            language: getLanguageFromExtension(extension),
+            type: 'code',
+            size: file.size
+          })
+        }
       } catch (err) {
         console.error(`Error reading file ${file.name}:`, err)
       }
     }
 
-    setUploadedFiles([...uploadedFiles, ...newFiles])
-    setIsFileDialogOpen(true)
+    // Add to attached files instead of opening dialog
+    setAttachedFiles([...attachedFiles, ...newFiles])
+    
+    // Clear the file input
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
+  }
+
+  const removeAttachedFile = (index) => {
+    setAttachedFiles(attachedFiles.filter((_, i) => i !== index))
   }
 
   const getLanguageFromExtension = (ext) => {
@@ -134,26 +187,53 @@ export default function ChatSection({
     return languageMap[ext] || 'plaintext'
   }
 
-  const insertFileContent = (file) => {
-    const codeBlock = `\`\`\`${file.language}\n${file.content}\n\`\`\``
-    setMessage(prev => {
-      const newMessage = prev ? `${prev}\n\n${codeBlock}` : codeBlock
-      return newMessage
-    })
-    setIsFileDialogOpen(false)
-    setUploadedFiles([])
-  }
-
-  const removeFile = (index) => {
-    setUploadedFiles(prev => prev.filter((_, i) => i !== index))
-  }
-
-  const handleSend = () => {
-    if (message.trim() && isConnected) {
+  const handleSend = async () => {
+    if (!isConnected) return
+    
+    // Handle case with attached files
+    if (attachedFiles.length > 0) {
+      const userMessage = message.trim()
+      let fullMessage = userMessage
+      
+      // Process each attached file
+      for (const file of attachedFiles) {
+        if (file.type === 'image') {
+          // For images, use vision API
+          try {
+            const response = await fetch('http://localhost:8000/api/v1/multimodal/vision', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                image: file.content,
+                prompt: userMessage || "Describe this image in detail.",
+              }),
+            })
+            
+            if (response.ok) {
+              const data = await response.json()
+              fullMessage += `\n\n[Image: ${file.name}]\n${data.description || data.response}`
+            }
+          } catch (err) {
+            console.error('Vision API error:', err)
+            fullMessage += `\n\n[Image: ${file.name}] (Could not analyze)`
+          }
+        } else {
+          // For code files, prepend the content
+          fullMessage += `\n\n\`\`\`${file.language}\n// File: ${file.name}\n${file.content}\n\`\`\``
+        }
+      }
+      
+      sendMessage('chat_message', fullMessage)
+      setMessage('')
+      setAttachedFiles([])
+    } else if (message.trim()) {
+      // Regular message without files
       if (message.startsWith('/')) {
         sendMessage('command', message.trim())
       } else {
-        sendMessage('chat', message.trim())
+        sendMessage('chat_message', message.trim())
       }
       setMessage('')
     }
@@ -171,13 +251,26 @@ export default function ChatSection({
     
     switch(msg.role) {
       case 'user':
-        return baseStyle + 'bg-emerald-500 text-white'
+        // Rust orange/red like close button
+        return baseStyle + 'text-white'
       case 'assistant':
-        return baseStyle + 'bg-indigo-500 text-white'
-        // return baseStyle + 'bg-sky-500 text-white'
+        // Banana yellow like UI theme
+        return baseStyle + 'text-gray-900'
       case 'system':
       default:
         return baseStyle + 'bg-amber-500 text-white'
+    }
+  }
+
+  const getMessageBackgroundStyle = (msg) => {
+    switch(msg.role) {
+      case 'user':
+        return { backgroundColor: '#ef4444' } // Rust red
+      case 'assistant':
+        return { backgroundColor: 'hsl(52 100% 55%)' } // Banana yellow
+      case 'system':
+      default:
+        return { backgroundColor: '#f59e0b' } // Amber for system messages
     }
   }
 
@@ -370,17 +463,43 @@ export default function ChatSection({
   }
 
   return (
-    <Card className="w-full h-full flex flex-col bg-card text-foreground font-mono">
+    <Card className="w-full h-full flex flex-col bg-card text-foreground font-mono" style={{ transform: 'translateZ(0)', willChange: 'contents' }}>
       {/* Model Selection at the top */}
       <div className="p-3 border-b non-draggable" style={{ borderColor: 'hsl(52 100% 55%)' }}>
         <Select value={selectedModel} onValueChange={onModelChange}>
-          <SelectTrigger className="w-full bg-card text-foreground non-draggable" style={{ borderColor: 'hsl(52 100% 55%)' }}>
+          <SelectTrigger 
+            className="w-full bg-card text-foreground non-draggable" 
+            style={{ borderColor: 'hsl(52 100% 55%)' }}
+            data-no-dnd="true"
+            onClick={(e) => {
+              e.stopPropagation()
+              console.log('SelectTrigger clicked, current model:', selectedModel)
+              console.log('Available models:', availableModels)
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
             <SelectValue placeholder="Select Model" />
           </SelectTrigger>
-          <SelectContent className="bg-card text-foreground" style={{ borderColor: 'hsl(52 100% 55%)' }}>
-            {availableModels.map((model) => (
-              <SelectItem key={model} value={model}>{model}</SelectItem>
-            ))}
+          <SelectContent 
+            className="bg-card text-foreground non-draggable z-[99999]" 
+            style={{ borderColor: 'hsl(52 100% 55%)' }}
+            data-no-dnd="true"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            {availableModels && availableModels.length > 0 ? (
+              availableModels.map((model) => (
+                <SelectItem 
+                  key={model} 
+                  value={model}
+                  className="non-draggable"
+                  onPointerDown={(e) => e.stopPropagation()}
+                >
+                  {model}
+                </SelectItem>
+              ))
+            ) : (
+              <div className="p-2 text-sm text-muted-foreground">No models available</div>
+            )}
           </SelectContent>
         </Select>
       </div>
@@ -393,21 +512,26 @@ export default function ChatSection({
           {chatHistory.map((msg, index) => (
             <div 
               key={`msg-${index}`}
-              className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}
             >
-              <div className={getMessageStyle(msg)}>
+              <div className={getMessageStyle(msg)} style={getMessageBackgroundStyle(msg)}>
                 <MarkdownContent content={msg.content} />
                 <CopyButton 
                   text={msg.content}
                   id={`msg-${index}`}
                 />
               </div>
+              {msg.timestamp && (
+                <span className="text-xs text-gray-500 mt-1 px-2">
+                  {formatTimestamp(msg.timestamp)}
+                </span>
+              )}
             </div>
           ))}
           
           {currentStream.content && (
             <div className="flex justify-start">
-              <div className={getMessageStyle(currentStream)}>
+              <div className={getMessageStyle(currentStream)} style={getMessageBackgroundStyle(currentStream)}>
                 <MarkdownContent content={currentStream.content} />
                 <CopyButton 
                   text={currentStream.content}
@@ -419,7 +543,7 @@ export default function ChatSection({
           
           {commandResult && (
             <div className="flex justify-start">
-              <div className={getMessageStyle({ role: 'system' })}>
+              <div className={getMessageStyle({ role: 'system' })} style={getMessageBackgroundStyle({ role: 'system' })}>
                 <MarkdownContent content={commandResult} />
                 <CopyButton 
                   text={commandResult}
@@ -431,96 +555,108 @@ export default function ChatSection({
         </div>
       </CardContent>
       
-      <div className="p-4 border-t" style={{ borderColor: 'hsl(52 100% 55%)' }}>
-        <div className="flex">
-          <div className="relative flex-grow flex">
-            <Input
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              onKeyPress={handleKeyPress}
-              placeholder="Please type your message and press Enter to send"
-              className="flex-grow bg-gray-800 text-green-400 border-green-400 pr-10 non-draggable"
-              disabled={!isConnected}
-            />
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="absolute right-2 top-1/2 transform -translate-y-1/2 h-8 w-8 hover:bg-gray-700 non-draggable"
-                    onClick={() => fileInputRef.current?.click()}
+      <div className="border-t" style={{ borderColor: 'hsl(52 100% 55%)' }}>
+        {/* File Attachment Bar - Above Input */}
+        {attachedFiles.length > 0 && (
+          <div className="p-2 bg-gray-900/50 border-b" style={{ borderColor: 'hsl(52 100% 55% / 0.3)' }}>
+            <div className="flex items-center gap-2 flex-wrap">
+              {attachedFiles.map((file, index) => (
+                <div
+                  key={index}
+                  className="relative group flex items-center gap-2 bg-gray-800 rounded-lg p-2 border-2"
+                  style={{ borderColor: 'hsl(52 100% 55% / 0.5)' }}
+                >
+                  {file.type === 'image' ? (
+                    // Image thumbnail
+                    <div className="flex items-center gap-2">
+                      <img
+                        src={file.preview}
+                        alt={file.name}
+                        className="w-12 h-12 object-cover rounded"
+                      />
+                      <div className="flex flex-col">
+                        <span className="text-xs text-green-400 font-medium truncate max-w-[150px]">
+                          {file.name}
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          {(file.size / 1024).toFixed(1)} KB
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    // Code file icon
+                    <div className="flex items-center gap-2">
+                      <FileCode className="w-8 h-8 text-green-400" />
+                      <div className="flex flex-col">
+                        <span className="text-xs text-green-400 font-medium truncate max-w-[150px]">
+                          {file.name}
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          {file.language} • {(file.size / 1024).toFixed(1)} KB
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  {/* Remove button */}
+                  <button
+                    onClick={() => removeAttachedFile(index)}
+                    className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center hover:bg-red-600 transition-colors non-draggable"
+                    style={{ zIndex: 10 }}
                   >
-                    <Paperclip className="h-4 w-4 text-green-400" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>Upload code file</p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileSelect}
-              className="hidden"
-              multiple
-              accept=".js,.jsx,.ts,.tsx,.py,.rb,.java,.cpp,.c,.cs,.php,.html,.css,.json,.yml,.yaml,.md,.sql,.sh,.bash,.rs,.go,.swift,.kt"
-            />
+                    <X className="w-3 h-3 text-white" />
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
+        )}
+        
+        {/* Input Area */}
+        <div className="p-4 flex items-center gap-2">
+          <Input
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyPress={handleKeyPress}
+            placeholder={attachedFiles.length > 0 ? "Add a message (optional)..." : "Please type your message and press Enter to send"}
+            className="flex-grow bg-gray-800 text-green-400 border-green-400 non-draggable"
+            disabled={!isConnected}
+          />
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-10 w-10 hover:bg-gray-700 non-draggable flex-shrink-0"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Paperclip className="h-4 w-4 text-green-400" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Upload code file</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileSelect}
+            className="hidden"
+            multiple
+            accept=".js,.jsx,.ts,.tsx,.py,.rb,.java,.cpp,.c,.cs,.php,.html,.css,.json,.yml,.yaml,.md,.sql,.sh,.bash,.rs,.go,.swift,.kt,.png,.jpg,.jpeg,.gif,.bmp,.webp,.svg"
+          />
           <Button 
             onClick={handleSend}
-            className={`ml-2 bg-green-600 text-white hover:bg-green-700 non-draggable ${
-              !isConnected && 'opacity-50 cursor-not-allowed'
+            className={`bg-green-600 text-white hover:bg-green-700 non-draggable flex-shrink-0 ${
+              (!isConnected || (message.trim() === '' && attachedFiles.length === 0)) && 'opacity-50 cursor-not-allowed'
             }`}
-            disabled={!isConnected}
+            disabled={!isConnected || (message.trim() === '' && attachedFiles.length === 0)}
           >
             Send
           </Button>
         </div>
       </div>
-
-      <Dialog open={isFileDialogOpen} onOpenChange={setIsFileDialogOpen}>
-        <DialogContent className="bg-gray-800 text-green-400 border-green-400">
-          <DialogHeader>
-            <DialogTitle>Select File to Insert</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            {uploadedFiles.map((file, index) => (
-              <div 
-                key={index} 
-                className="flex items-center justify-between p-3 bg-gray-700 rounded-lg hover:bg-gray-600 cursor-pointer group"
-                onClick={() => insertFileContent(file)}
-              >
-                <div className="flex-1">
-                  <p className="font-medium">{file.name}</p>
-                  <p className="text-sm text-gray-400">
-                    {(file.size / 1024).toFixed(1)}KB • {file.language}
-                  </p>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="opacity-0 group-hover:opacity-100 transition-opacity rounded-full flex items-center justify-center"
-                    style={{
-                      width: '24px',
-                      height: '24px',
-                      padding: '0'
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      removeFile(index)
-                    }}
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </DialogContent>
-      </Dialog>
     </Card>
   )
 }
